@@ -773,12 +773,14 @@ class FitgirlExtractorApp:
             if not handles:
                 raise RuntimeError("all browser windows closed")
             try:
-                drv.current_window_handle
+                active = drv.current_window_handle
             except Exception:
-                drv.switch_to.window(handles[-1])
+                active = handles[-1]
+                drv.switch_to.window(active)
             if len(drv.window_handles) < 2:
                 try:
                     drv.execute_script("window.open('about:blank','_blank');")
+                    drv.switch_to.window(active)
                 except Exception:
                     pass
             try:
