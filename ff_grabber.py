@@ -8,6 +8,7 @@ from tkinter import ttk, messagebox
 import threading
 import time
 import re
+from urllib.parse import urlparse
 import requests
 import base58
 from bs4 import BeautifulSoup
@@ -18,6 +19,7 @@ import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.action_chains import ActionChains
 
+ALLOWED_FITGITL_HOSTS = {"paste.fitgirl-repacks.site"}
 FF_LINK_RE = re.compile(
     r"https?://(?:www\.)?fuckingfast\.co/[^\s\"'<>\]]+",
     re.IGNORECASE,
@@ -26,6 +28,20 @@ PASTE_URL_RE = re.compile(
     r"https?://paste\.fitgirl-repacks\.site/\?[0-9a-fA-F]+#[A-Za-z0-9]+",
     re.IGNORECASE,
 )
+
+
+def is_valid_fitgirl_url(url):
+    """Return True if url is an HTTP(S) URL on paste.fitgirl-repacks.site with query and fragment."""
+    try:
+        parsed = urlparse((url or "").strip())
+    except ValueError:
+        return False
+    return (
+            parsed.scheme == "https"
+            and (parsed.hostname or "").lower() in ALLOWED_FITGITL_HOSTS
+            and bool(parsed.query)
+            and bool(parsed.fragment)
+    )
 
 
 def extract_ff_links(text):
@@ -45,14 +61,18 @@ def decrypt_privatebin_paste(paste_url):
     Decrypt a PrivateBin v2 paste (FitGirl pastebin).
     URL form: https://paste.fitgirl-repacks.site/?<id>#<base58-key>
     """
-    paste_url = paste_url.strip()
-    if "?" not in paste_url or "#" not in paste_url:
+    paste_url = (paste_url or "").strip()
+    parsed = urlparse(paste_url)
+    if parsed.scheme != "https" or (parsed.hostname or "").lower() not in ALLOWED_FITGITL_HOSTS:
+        raise ValueError("Paste URL must use host paste.fitgirl-repacks.site")
+    if not parsed.query or not parsed.fragment:
         raise ValueError("Paste URL must include ?pasteid#key")
 
-    base, rest = paste_url.split("?", 1)
-    pasteid, key_b58 = rest.split("#", 1)
-    pasteid = pasteid.split("&")[0].replace("pasteid=", "")
-    key_b58 = key_b58.split("&")[0].strip()
+    pasteid = parsed.query.split("&")[0].replace("pasteid=", "").strip()
+    if not PASTE_ID_RE.fullmatch(pasteid):
+        raise ValueError("Invalid paste ID format")
+
+    key_b58 = parsed.fragment.split("&")[0].strip()
     key = base58.b58decode(key_b58)
     if len(key) != 32:
         raise ValueError(f"Invalid paste key length: {len(key)} (expected 32)")
@@ -62,7 +82,7 @@ def decrypt_privatebin_paste(paste_url):
         "Accept": "application/json",
         "X-Requested-With": "JSONHttpRequest",
     }
-    api_url = f"{base.rstrip('/')}/?{pasteid}"
+    api_url = f"https://paste.fitgirl-repacks.site/?{pasteid}"
     res = requests.get(api_url, headers=headers, timeout=20)
     res.raise_for_status()
     data = res.json()
@@ -430,12 +450,13 @@ class FitgirlExtractorApp:
         paste_urls = []
         for a in soup.find_all("a", href=True):
             href = a["href"].strip()
-            if "paste.fitgirl-repacks.site" in href and "#" in href:
-                paste_urls.append(href)
             elif "fuckingfast.co" in href and href not in links:
+            if is_valid_fitgirl_url(href):
+                if href not in paste_urls:
+                    paste_urls.append(href)
                 links.append(href)
         for match in PASTE_URL_RE.findall(html):
-            if match not in paste_urls:
+            if is_valid_fitgirl_url(match) and match not in paste_urls:
                 paste_urls.append(match)
         for paste_url in paste_urls:
             for link in self._links_from_paste_url(paste_url):
@@ -455,8 +476,8 @@ class FitgirlExtractorApp:
             )
 
             # A) PrivateBin paste URL(s) — decrypt client-side AES paste
-            paste_urls = PASTE_URL_RE.findall(raw)
-            if not paste_urls and is_single_http_url and "paste.fitgirl-repacks.site" in first_line:
+            paste_urls = [u for u in PASTE_URL_RE.findall(raw) if is_valid_fitgirl_url(u)]
+            if not paste_urls and is_single_http_url and is_valid_fitgirl_url(first_line):
                 paste_urls = [first_line]
             if paste_urls:
                 self.root.after(0, self.update_ui, "Decrypting PrivateBin paste...")
