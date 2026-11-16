@@ -19,15 +19,56 @@ import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.action_chains import ActionChains
 
+ALLOWED_FF_HOSTS = {"fuckingfast.co", "www.fuckingfast.co"}
+ALLOWED_FF_DL_HOSTS = {"dl.fuckingfast.co"}
 ALLOWED_FITGITL_HOSTS = {"paste.fitgirl-repacks.site"}
 FF_LINK_RE = re.compile(
     r"https?://(?:www\.)?fuckingfast\.co/[^\s\"'<>\]]+",
     re.IGNORECASE,
 )
+PASTE_ID_RE = re.compile(r"^[0-9a-fA-F]+$")
 PASTE_URL_RE = re.compile(
     r"https?://paste\.fitgirl-repacks\.site/\?[0-9a-fA-F]+#[A-Za-z0-9]+",
     re.IGNORECASE,
 )
+_BIDI_OVERRIDE_CHARS = {0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2066, 0x2067, 0x2068, 0x2069}
+
+
+def is_valid_ff_url(url):
+    """Return True if url is an HTTP(S) URL on an allowed fuckingfast.co host with a non-empty path."""
+    try:
+        parsed = urlparse((url or "").strip())
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "https"
+        and (parsed.hostname or "").lower() in ALLOWED_FF_HOSTS
+        and bool(parsed.path and parsed.path.strip("/"))
+    )
+
+
+def is_valid_ff_download_url(url):
+    """Return True if url is an HTTPS direct download URL on dl.fuckingfast.co."""
+    try:
+        parsed = urlparse((url or "").strip())
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "https"
+        and (parsed.hostname or "").lower() in ALLOWED_FF_DL_HOSTS
+        and parsed.path.startswith("/dl/")
+        and len(parsed.path) > len("/dl/")
+    )
+
+
+def is_valid_ff_post_endpoint(endpoint):
+    """Return True if an hx-post endpoint is a safe relative path or an HTTPS URL on fuckingfast.co."""
+    endpoint = (endpoint or "").strip()
+    if not endpoint:
+        return False
+    if endpoint.startswith("/") and not endpoint.startswith("//"):
+        return True
+    return is_valid_ff_url(endpoint)
 
 
 def is_valid_fitgirl_url(url):
@@ -44,13 +85,25 @@ def is_valid_fitgirl_url(url):
     )
 
 
+def get_ff_display_name(url):
+    """Extract a sanitized display label from a fuckingfast.co URL."""
+    parsed = urlparse((url or "").strip())
+    path_id = parsed.path.rstrip("/").split("/")[-1]
+    fragment = parsed.fragment.strip()
+    raw_label = fragment if fragment else path_id
+    sanitized = "".join(
+        ch for ch in raw_label if ch.isprintable() and ord(ch) not in _BIDI_OVERRIDE_CHARS
+    ).strip()
+    return sanitized or path_id or url
+
+
 def extract_ff_links(text):
     """Pull unique fuckingfast.co URLs from HTML, markdown, or plain text."""
     links = []
     seen = set()
     for match in FF_LINK_RE.findall(text or ""):
         url = match.rstrip(").,;]")
-        if url not in seen:
+        if is_valid_ff_url(url) and url not in seen:
             seen.add(url)
             links.append(url)
     return links
@@ -450,10 +503,10 @@ class FitgirlExtractorApp:
         paste_urls = []
         for a in soup.find_all("a", href=True):
             href = a["href"].strip()
-            elif "fuckingfast.co" in href and href not in links:
             if is_valid_fitgirl_url(href):
                 if href not in paste_urls:
                     paste_urls.append(href)
+            elif is_valid_ff_url(href) and href not in links:
                 links.append(href)
         for match in PASTE_URL_RE.findall(html):
             if is_valid_fitgirl_url(match) and match not in paste_urls:
@@ -469,10 +522,11 @@ class FitgirlExtractorApp:
             ff_links = []
             non_empty = [ln.strip() for ln in raw.splitlines() if ln.strip()]
             first_line = non_empty[0] if non_empty else ""
-            is_single_http_url = (
-                len(non_empty) == 1
-                and first_line.lower().startswith("http")
-                and "<" not in first_line
+            parsed_first = urlparse(first_line) if len(non_empty) == 1 and "<" not in first_line else None
+            is_single_http_url = bool(
+                parsed_first
+                and parsed_first.scheme == "https"
+                and parsed_first.hostname
             )
 
             # A) PrivateBin paste URL(s) — decrypt client-side AES paste
@@ -487,7 +541,12 @@ class FitgirlExtractorApp:
                             ff_links.append(link)
 
             # B) FitGirl game page — scrape FF links and any nested paste links
-            if not ff_links and is_single_http_url and "fuckingfast.co" not in first_line.lower():
+            if (
+                not ff_links
+                and is_single_http_url
+                and not is_valid_ff_url(first_line)
+                and not is_valid_fitgirl_url(first_line)
+            ):
                 self.root.after(0, self.update_ui, "Fetching game page...")
                 headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
                 res = requests.get(first_line, headers=headers, timeout=20)
@@ -513,6 +572,7 @@ class FitgirlExtractorApp:
             self.root.after(0, lambda: self.fetch_btn.config(state="normal"))
 
     def populate_checkboxes(self, links):
+        links = [link for link in (links or []) if is_valid_ff_url(link)]
         if not links:
             self.status_var.set("No FuckingFast links found on this page!")
             self.fetch_btn.config(state="normal")
@@ -527,7 +587,7 @@ class FitgirlExtractorApp:
             var = tk.BooleanVar(value=True)
             self.checkbox_vars[link] = var
             
-            filename = link.split('#')[-1] if '#' in link else link.split('/')[-1]
+            filename = get_ff_display_name(link)
             
             chk = ttk.Checkbutton(self.scrollable_frame, text=filename, variable=var)
             chk.pack(anchor="w", padx=5, pady=2)
@@ -707,6 +767,8 @@ class FitgirlExtractorApp:
 
             def extract_one(drv, link, filename):
                 nonlocal captcha_blocked
+                if not is_valid_ff_url(link):
+                    raise ValueError(f"Refusing to open untrusted URL: {link}")
                 ensure_window(drv)
                 drv.get(link)
 
@@ -718,12 +780,15 @@ class FitgirlExtractorApp:
                     page_html = drv.page_source
                     last_html = page_html
 
-                    match_old = re.search(r'window\.open\("([^"]+)"\)', page_html)
-                    if match_old:
-                        return match_old.group(1)
+                    for candidate in re.findall(r'window\.open\("([^"]+)"\)', page_html):
+                        if is_valid_ff_download_url(candidate):
+                            return candidate.strip()
 
-                    match_new = re.search(r'hx-post="([^"]+)"', page_html)
-                    if match_new:
+                    post_endpoint = next(
+                        (ep for ep in re.findall(r'hx-post="([^"]+)"', page_html) if is_valid_ff_post_endpoint(ep)),
+                        None,
+                    )
+                    if post_endpoint:
                         turnstile_token = drv.execute_script(
                             "return window.turnstileToken"
                             " || (document.querySelector('[name=\"cf-turnstile-response\"]') || {}).value"
@@ -746,7 +811,6 @@ class FitgirlExtractorApp:
                                 continue
                             turnstile_token = ""
 
-                        post_endpoint = match_new.group(1)
                         js_fetch = """
                         var token = arguments[0];
                         var endpoint = arguments[1];
@@ -772,12 +836,11 @@ class FitgirlExtractorApp:
                         try:
                             result = drv.execute_async_script(js_fetch, turnstile_token, post_endpoint)
                             if result:
-                                if result.startswith("http"):
-                                    return result
-                                else:
-                                    match_url = re.search(r'(https://dl\.fuckingfast\.co/dl/[^\'"]+)', result)
-                                    if match_url:
-                                        return match_url.group(1)
+                                if is_valid_ff_download_url(result):
+                                    return result.strip()
+                                for candidate in re.findall(r'(https://dl\.fuckingfast\.co/dl/[^\s\'\"<>]+)', result):
+                                    if is_valid_ff_download_url(candidate):
+                                        return candidate.strip()
                         except Exception:
                             pass
 
@@ -787,7 +850,7 @@ class FitgirlExtractorApp:
                 return None
 
             for i, link in enumerate(links, 1):
-                filename = link.split('#')[-1] if '#' in link else link.split('/')[-1]
+                filename = get_ff_display_name(link)
                 self.root.after(0, self.update_ui, f"Processing [{i}/{total}]: {filename}")
 
                 for attempt in range(2):
