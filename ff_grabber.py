@@ -682,12 +682,31 @@ class FitgirlExtractorApp:
         self.root.after(0, self.update_ui, f"Initializing using {browser_name} to bypass Cloudflare...", 0, total)
         
         def create_driver(version=None):
+            chromium_prefs = {
+                "download_restrictions": 3,  # Block all file downloads
+                "download.prompt_for_download": True,
+                "download.default_directory": os.devnull,
+                "profile.default_content_setting_values.automatic_downloads": 2,
+                "profile.default_content_setting_values.notifications": 2,
+                "profile.default_content_setting_values.geolocation": 2,
+                "profile.default_content_setting_values.media_stream": 2,
+                "safebrowsing.enabled": True,
+            }
+
             if browser_name.lower() == 'firefox':
                 from selenium import webdriver
                 from selenium.webdriver.firefox.options import Options
                 opts = Options()
                 opts.binary_location = browser_executable
                 opts.set_preference("dom.webdriver.enabled", False)
+                opts.set_preference("browser.download.folderList", 2)
+                opts.set_preference("browser.download.dir", os.devnull)
+                opts.set_preference("browser.download.useDownloadDir", False)
+                opts.set_preference("browser.download.always_ask_before_handling_new_types", True)
+                opts.set_preference("browser.helperApps.alwaysAsk.force", True)
+                opts.set_preference("pdfjs.disabled", True)
+                opts.set_preference("permissions.default.desktop-notification", 2)
+                opts.set_preference("permissions.default.geo", 2)
                 return webdriver.Firefox(options=opts)
                 
             elif browser_name.lower() == 'msedge':
@@ -697,17 +716,26 @@ class FitgirlExtractorApp:
                 opts.binary_location = browser_executable
                 opts.add_experimental_option("excludeSwitches", ["enable-automation"])
                 opts.add_experimental_option('useAutomationExtension', False)
+                opts.add_experimental_option("prefs", chromium_prefs)
                 opts.add_argument("--disable-blink-features=AutomationControlled")
-                return webdriver.Edge(options=opts)
+                drv = webdriver.Edge(options=opts)
                 
             else:
                 opts = uc.ChromeOptions()
-                return uc.Chrome(
+                opts.add_experimental_option("prefs", chromium_prefs)
+                drv = uc.Chrome(
                     options=opts, 
                     use_subprocess=True, 
                     browser_executable_path=browser_executable, 
                     version_main=version
                 )
+
+            for cdp_cmd in ("Browser.setDownloadBehavior", "Page.setDownloadBehavior"):
+                try:
+                    drv.execute_cdp_cmd(cdp_cmd, {"behavior": "deny"})
+                except Exception:
+                    pass
+            return drv
         
         def ensure_window(drv):
             handles = drv.window_handles
@@ -722,6 +750,10 @@ class FitgirlExtractorApp:
                     drv.execute_script("window.open('about:blank','_blank');")
                 except Exception:
                     pass
+            try:
+                drv.execute_cdp_cmd("Page.setDownloadBehavior", {"behavior": "deny"})
+            except Exception:
+                pass
 
         def session_is_dead(err):
             msg = str(err)
