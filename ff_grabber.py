@@ -607,12 +607,29 @@ class FitgirlExtractorApp:
     def get_browser_path(self, selected_browser="Auto-Detect Browser"):
         browser_paths = {
             "Google Chrome": [
+                # Standard
                 r"%ProgramFiles%\Google\Chrome\Application\chrome.exe",
                 r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe",
                 r"%LocalAppData%\Google\Chrome\Application\chrome.exe",
                 "/usr/bin/google-chrome",
                 "/usr/bin/google-chrome-stable",
-                "/var/lib/flatpak/exports/bin/com.google.Chrome"
+                "/var/lib/flatpak/exports/bin/com.google.Chrome",
+                # Developer
+                r"%ProgramFiles%\Google\Chrome Dev\Application\chrome.exe",
+                r"%ProgramFiles(x86)%\Google\Chrome Dev\Application\chrome.exe",
+                r"%LocalAppData%\Google\Chrome Dev\Application\chrome.exe",
+                "/usr/bin/google-chrome-unstable",
+                "/usr/bin/google-chrome-dev",
+                "/var/lib/flatpak/exports/bin/com.google.ChromeDev",
+                # Canary
+                r"%ProgramFiles%\Google\Chrome SxS\Application\chrome.exe",
+                r"%ProgramFiles(x86)%\Google\Chrome SxS\Application\chrome.exe",
+                r"%LocalAppData%\Google\Chrome SxS\Application\chrome.exe",
+                r"%ProgramFiles%\Google\Chrome Canary\Application\chrome.exe",
+                r"%ProgramFiles(x86)%\Google\Chrome Canary\Application\chrome.exe",
+                r"%LocalAppData%\Google\Chrome Canary\Application\chrome.exe",
+                "/usr/bin/google-chrome-canary",
+                "/var/lib/flatpak/exports/bin/com.google.ChromeCanary",
             ],
             "Microsoft Edge": [
                 r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe",
@@ -630,11 +647,23 @@ class FitgirlExtractorApp:
                 "/var/lib/flatpak/exports/bin/com.brave.Browser"
             ],
             "Mozilla Firefox": [
+                # Standard
                 r"%ProgramFiles%\Mozilla Firefox\firefox.exe",
                 r"%ProgramFiles(x86)%\Mozilla Firefox\firefox.exe",
                 r"%LocalAppData%\Mozilla Firefox\firefox.exe",
                 "/usr/bin/firefox",
-                "/var/lib/flatpak/exports/bin/org.mozilla.firefox"
+                "/var/lib/flatpak/exports/bin/org.mozilla.firefox",
+                # Developer Edition
+                r"%ProgramFiles%\Firefox Developer Edition\firefox.exe",
+                r"%ProgramFiles(x86)%\Firefox Developer Edition\firefox.exe",
+                r"%LocalAppData%\Firefox Developer Edition\firefox.exe",
+                "/usr/bin/firefox-devedition",
+                "/usr/bin/firefox-developer-edition",
+                # Nightly
+                r"%ProgramFiles%\Firefox Nightly\firefox.exe",
+                r"%ProgramFiles(x86)%\Firefox Nightly\firefox.exe",
+                r"%LocalAppData%\Firefox Nightly\firefox.exe",
+                "/usr/bin/firefox-nightly",
             ]
         }
         
@@ -678,6 +707,8 @@ class FitgirlExtractorApp:
             return
 
         browser_name = os.path.basename(browser_executable).replace('.exe', '')
+        is_firefox = "firefox" in browser_name.lower()
+        is_edge = "edge" in browser_name.lower()
         print(f"EXTRACTION START: {total} links, browser={selected_browser} -> {browser_executable}")
         self.root.after(0, self.update_ui, f"Initializing using {browser_name} to bypass Cloudflare...", 0, total)
         
@@ -693,7 +724,7 @@ class FitgirlExtractorApp:
                 "safebrowsing.enabled": True,
             }
 
-            if browser_name.lower() == 'firefox':
+            if is_firefox:
                 from selenium import webdriver
                 from selenium.webdriver.firefox.options import Options
                 opts = Options()
@@ -709,7 +740,7 @@ class FitgirlExtractorApp:
                 opts.set_preference("permissions.default.geo", 2)
                 return webdriver.Firefox(options=opts)
                 
-            elif browser_name.lower() == 'msedge':
+            elif is_edge:
                 from selenium import webdriver
                 from selenium.webdriver.edge.options import Options
                 opts = Options()
@@ -777,7 +808,7 @@ class FitgirlExtractorApp:
             except Exception as e:
                 print(f"DRIVER CREATE ERROR ({browser_name}): {e}")
                 error_msg = str(e)
-                if browser_name.lower() not in ['firefox', 'msedge'] and "Current browser version is" in error_msg:
+                if not (is_firefox or is_edge) and "Current browser version is" in error_msg:
                     match = re.search(r"Current browser version is (\d+)", error_msg)
                     if match:
                         correct_version = int(match.group(1))
@@ -789,7 +820,7 @@ class FitgirlExtractorApp:
                 else:
                     raise e
 
-            detectable_browser = browser_name.lower() in ('firefox', 'msedge')
+            detectable_browser = is_firefox or is_edge
             captcha_blocked = 0
             resolved_any = False
             if detectable_browser:
